@@ -107,7 +107,8 @@ def run_case(case, method):
     if method == "fixed_groups":
         classes = [set(range(i, min(i + k, n))) for i in range(0, n, k)]
         if any(len(group) < k for group in classes):
-            classes[-2] |= classes.pop()
+            remainder = classes.pop()
+            classes[-1] |= remainder
     else:
         classes = [set(range(n))]
     debt = [0] * n
