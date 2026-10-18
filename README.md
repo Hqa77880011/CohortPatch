@@ -74,3 +74,15 @@ python -m cohortpatch.activity --data data/activity.npz --records runs/main/coho
 ```
 
 Local learners start from the same model each round and the authorized updates are equally averaged. Output includes held-out utility macro-F1, accuracy and server-visible aggregate updates. Protocol masking remains the secure aggregation adapter's responsibility.
+
+## Fixed reproduction setting
+
+Crash-free ideal aggregate-release model: 12 clients, k=3, capacity9, 12 rounds; history partition, fairness and inclusion metrics.
+
+The checked-in entry point fixes data seeds, methods, budgets and output paths. Inspect its commands without starting any computation:
+
+```bash
+python reproduce.py --plan
+```
+
+Remove `--plan` to execute the registered pipeline in a fresh output directory. The entry point calls the existing implementation; it does not insert paper results. Installation uses the package instructions above.
