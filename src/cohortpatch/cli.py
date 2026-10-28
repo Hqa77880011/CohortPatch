@@ -2,6 +2,9 @@ import argparse
 import csv
 import json
 import random
+import platform
+import sys
+from importlib.metadata import version
 import time
 from pathlib import Path
 
@@ -17,7 +20,10 @@ from . import core
 
 def read_jsonl(path):
     with Path(path).open(encoding="utf-8") as stream:
-        return [json.loads(line) for line in stream if line.strip()]
+        rows = [json.loads(line) for line in stream if line.strip()]
+    if not rows or len({row['id'] for row in rows}) != len(rows):
+        raise ValueError('Expected nonempty JSONL with unique case IDs')
+    return rows
 
 
 def write_jsonl(path, rows):
@@ -60,6 +66,7 @@ def summarize(rows):
     elapsed = sum(row["metrics"]["latency_ms"] for row in rows) / 1000
     legal = sum(row["metrics"].get("legal_effects", 0) for row in rows)
     report["legal_throughput_per_second"] = legal / elapsed if elapsed else None
+    report.update(core.aggregate(rows))
     return report
 
 
@@ -85,6 +92,8 @@ def execute(cases, method, output):
                 "family": case.get("family", case["id"]),
                 "method": method,
                 "cluster": case.get("cluster", case["id"]),
+                "seed": case.get("seed"),
+                "group": case.get("group"),
                 "result": result,
                 "metrics": metrics,
             }
@@ -95,20 +104,27 @@ def execute(cases, method, output):
     (output / "metrics.json").write_text(
         json.dumps(summarize(rows), indent=2, allow_nan=False), encoding="utf-8"
     )
+    manifest = dict(python=platform.python_version(), command=sys.argv,
+                    dependencies={name: version(name) for name in ('numpy', 'scipy', 'matplotlib', 'psutil', 'scikit-learn')},
+                    case_ids=[case['id'] for case in cases], source_type='finite-model execution')
+    (output / 'run_config.json').write_text(json.dumps(manifest, indent=2), encoding='utf-8')
     return rows
 
 
-def plot(paths, output):
+def plot(paths, output, metrics=None):
     records = [row for path in paths for row in read_jsonl(Path(path) / "records.jsonl")]
     methods = sorted({row["method"] for row in records})
-    keys = sorted({key for row in records for key in row["metrics"]})
+    summaries = {method: summarize([row for row in records if row['method'] == method]) for method in methods}
+    keys = metrics or sorted({key for summary in summaries.values() for key, value in summary.items() if isinstance(value, dict)})
+    if any(not any(key in summary for summary in summaries.values()) for key in keys):
+        raise ValueError('Unknown plot metric')
     output = Path(output)
     output.mkdir(parents=True, exist_ok=True)
     with (output / "summary.csv").open("w", newline="", encoding="utf-8") as stream:
         writer = csv.writer(stream)
         writer.writerow(["method", "metric", "n", "mean", "std", "p50", "p95", "p99"])
         for method in methods:
-            summary = summarize([r for r in records if r["method"] == method])
+            summary = summaries[method]
             for key, value in summary.items():
                 if isinstance(value, dict):
                     writer.writerow(
@@ -124,16 +140,9 @@ def plot(paths, output):
                         ]
                     )
     for key in keys:
-        groups = [
-            [
-                r["metrics"][key]
-                for r in records
-                if r["method"] == method and r["metrics"].get(key) is not None
-            ]
-            for method in methods
-        ]
         fig, ax = plt.subplots(figsize=(max(6, len(methods)), 4))
-        means = [np.mean(group) if group else np.nan for group in groups]
+        means = [summaries[method].get(key, {}).get('mean') for method in methods]
+        means = [value if value is not None else np.nan for value in means]
         ax.bar(methods, means, color="#527c91")
         ax.set_ylabel(key)
         ax.tick_params(axis="x", rotation=35)
@@ -153,6 +162,7 @@ def main():
         item = sub.add_parser(name)
         item.add_argument("--data", required=True)
         item.add_argument("--output", required=True)
+        item.add_argument("--config", help="JSON public-parameter overrides; keep input data unchanged")
         item.add_argument(
             "--methods",
             nargs="+",
@@ -161,6 +171,7 @@ def main():
         )
     item = sub.add_parser("plot")
     item.add_argument("--inputs", nargs="+", required=True)
+    item.add_argument("--metrics", nargs="+", help="Metric names; defaults to all available aggregates")
     item.add_argument("--output", required=True)
     args = parser.parse_args()
     if args.command == "prepare":
@@ -168,14 +179,23 @@ def main():
             parser.error("--count must be positive")
         rows = list(core.generate(random.Random(args.seed), args.count))
         for row in rows:
+            row['family'] = str(args.seed) + ':' + row.get('family', row['id'])
             row["id"] = str(args.seed) + ":" + row["id"]
         write_jsonl(args.output, rows)
     elif args.command in ("run", "suite"):
         cases = read_jsonl(args.data)
+        if args.config:
+            overrides = json.loads(Path(args.config).read_text(encoding='utf-8'))
+            for case in cases:
+                for key, value in overrides.items():
+                    if isinstance(value, dict) and isinstance(case.get(key), dict):
+                        case[key] = {**case[key], **value}
+                    else:
+                        case[key] = value
         for method in args.methods:
             execute(cases, method, Path(args.output) / method)
     else:
-        plot(args.inputs, args.output)
+        plot(args.inputs, args.output, args.metrics)
 
 
 if __name__ == "__main__":

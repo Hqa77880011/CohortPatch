@@ -14,3 +14,9 @@ figures/
 .ruff_cache/
 *.joblib
 
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
+*.npz
+results/
+*.log

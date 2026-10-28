@@ -13,8 +13,9 @@ METHODS = [
 
 
 def legal_size(m, v, k):
+    """Return sizes preserving both nonempty historical children at least k."""
     result = [0]
-    if v == m:
+    if v == m and m >= k:
         result.append(m)
     if m >= 2 * k:
         result.extend(range(k, min(v, m - k) + 1))
@@ -34,10 +35,14 @@ def refine(classes, selected):
     return result
 
 
-def choose(classes, usable, debt, forecasts, capacity, k, threshold, method):
+def choose(classes, usable, debt, forecasts, capacity, k, threshold, method,
+           fairness_weight=0.1, fragmentation_weight=1.0, retry_costs=None, retry_weight=1.0,
+           forecast_horizon=1):
     options = []
     for group in classes:
-        available = sorted(group & usable, key=lambda i: (-debt[i], i))
+        available = sorted(group & usable, key=lambda i: (
+            0 if method in ("no_fairness", "greedy_safe") else -debt[i],
+            -sum(i in future for future in forecasts), i))
         sizes = legal_size(len(group), len(available), k)
         if method == "fixed_groups":
             sizes = [0, len(group)] if group <= usable else [0]
@@ -53,13 +58,15 @@ def choose(classes, usable, debt, forecasts, capacity, k, threshold, method):
                     after = largest(len(subset), len(subset & future), k)
                     rest = group - subset
                     after += largest(len(rest), len(rest & future), k)
-                    fragmentation += max(0, before - after) / len(forecasts)
+                    fragmentation += forecast_horizon * max(0, before - after) / len(forecasts)
             fairness = (
                 0
                 if method in ("no_fairness", "greedy_safe")
-                else 0.25 * sum(debt[i] for i in subset)
+                else fairness_weight * sum(debt[i] for i in subset)
             )
-            candidates.append((subset, len(subset) + fairness - fragmentation))
+            retry = sum((retry_costs or {}).get(str(i), 0) for i in subset)
+            candidates.append((subset, len(subset) + fairness - fragmentation_weight * fragmentation
+                               - retry_weight * retry))
         options.append(candidates)
     table = {0: (0.0, set())}
     for candidates in options:
@@ -104,16 +111,36 @@ def run_case(case, method):
     n, k = case["clients"], case["k"]
     if n < k:
         raise ValueError("Enrolled population smaller than anonymity threshold")
-    if method == "fixed_groups":
+    if "initial_classes" in case:
+        classes = [set(group) for group in case["initial_classes"]]
+        if (sum(map(len, classes)) != n or set().union(*classes) != set(range(n))
+                or any(len(group) < k for group in classes)):
+            raise ValueError("Initial classes must partition enrolled clients into k-safe histories")
+    elif method == "fixed_groups" and not case.get("warm_start_rosters"):
         classes = [set(range(i, min(i + k, n))) for i in range(0, n, k)]
         if any(len(group) < k for group in classes):
             remainder = classes.pop()
             classes[-1] |= remainder
     else:
         classes = [set(range(n))]
+    initial_partition = [sorted(group) for group in classes]
+    history_classes = [set(group) for group in case.get("initial_classes", [list(range(n))])]
     debt = [0] * n
     rosters = []
-    minimum = n
+    warm = case.get("warm_start_rosters", [])
+    for roster in warm:
+        selected = set(roster)
+        if (not selected <= set(range(n)) or len(selected) != len(roster)
+                or not case["threshold"] <= len(selected) <= case["capacity"]):
+            raise ValueError("Warm-start release violates enrolled roster or resource bounds")
+        classes = refine(classes, selected)
+        history_classes = refine(history_classes, selected)
+        if any(len(group) < k for group in classes):
+            raise ValueError("Warm-start release violates historical safety")
+        rosters.append(sorted(selected))
+        for client in range(n):
+            debt[client] += client not in selected
+    minimum = min(map(len, history_classes))
     violations = 0
     for t, indices in enumerate(case["availability"]):
         usable = set(indices)
@@ -129,12 +156,18 @@ def run_case(case, method):
                 k,
                 case["threshold"],
                 method,
+                case.get("fairness_weight", 0.1),
+                case.get("fragmentation_weight", 1.0),
+                case.get("retry_costs"),
+                case.get("retry_weight", 1.0),
+                case.get("forecast_horizon", 1),
             )
         if selected and len(selected) < case["threshold"]:
             selected = set()
         classes = refine(classes, selected)
-        minimum = min(minimum, min(map(len, classes)))
-        violations += sum(len(group) < k for group in classes)
+        history_classes = refine(history_classes, selected)
+        minimum = min(minimum, min(map(len, history_classes)))
+        violations += sum(len(group) < k for group in history_classes)
         for client in usable:
             debt[client] += client not in selected
         rosters.append(sorted(selected))
@@ -145,16 +178,26 @@ def run_case(case, method):
         "rosters": rosters,
         "minimum_class_size": minimum,
         "violations": violations,
-        "final_classes": len(classes),
+        "final_classes": len(history_classes),
+        "protected_partition_classes": len(classes),
         "fairness": jain,
         "inclusion_counts": counts,
+        "included": sum(counts),
+        "usable": sum(map(len, case["availability"])) + n * len(warm),
+        "attempted_rounds": len(rosters),
+        "policy": {name: case[name] for name in ("clients", "k", "capacity", "threshold")},
+        "initial_classes": initial_partition,
+        "uploaded": [list(range(n)) for _ in warm] + case["availability"],
+        "warm_start_rounds": len(warm),
     }
 
 
 def score(case, result):
     included = sum(map(len, result["rosters"]))
-    possible = sum(map(len, case["availability"]))
-    history = [tuple(i in roster for roster in result["rosters"]) for i in range(case["clients"])]
+    possible = result["usable"]
+    initial = case.get("initial_classes", [list(range(case["clients"]))])
+    history = [(next(j for j, group in enumerate(initial) if i in group),)
+               + tuple(i in roster for roster in result["rosters"]) for i in range(case["clients"])]
     sizes = [history.count(value) for value in history]
     attribution_bound = sum(1 / size for size in sizes) / len(sizes)
     return {
@@ -167,3 +210,11 @@ def score(case, result):
         "successful_rounds": sum(bool(r) for r in result["rosters"]),
         "legal_effects": included if not result["violations"] else 0,
     }
+
+
+def aggregate(rows):
+    """Use common original usable client-rounds as the inclusion denominator."""
+    possible = sum(row["result"]["usable"] for row in rows)
+    included = sum(row["result"]["included"] for row in rows)
+    return {"included_fraction": dict(count=possible, mean=included/possible if possible else None),
+            "minimum_class_size": dict(count=len(rows), mean=min(row["result"]["minimum_class_size"] for row in rows))}
