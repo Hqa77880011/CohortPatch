@@ -13,7 +13,8 @@ class RosterLedger:
 
     def __init__(self, path, classes, k, capacity, threshold):
         members = [client for group in classes for client in group]
-        if (k < 1 or not classes or len(members) != len(set(members))
+        if (min(k, capacity, threshold) < 1 or threshold > capacity
+                or not classes or len(members) != len(set(members))
                 or any(len(group) < k for group in classes)):
             raise ValueError('Initial enrolled partition must satisfy k-safety')
         self.k, self.capacity, self.threshold = k, capacity, threshold

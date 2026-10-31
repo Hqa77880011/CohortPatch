@@ -109,8 +109,19 @@ def generate(rng, count):
 
 def run_case(case, method):
     n, k = case["clients"], case["k"]
-    if n < k:
-        raise ValueError("Enrolled population smaller than anonymity threshold")
+    if min(n, k, case["threshold"], case["capacity"]) < 1 or n < k:
+        raise ValueError("Positive policy values and enrolled population >= k are required")
+    if case["threshold"] > case["capacity"]:
+        raise ValueError("Cryptographic threshold exceeds capacity")
+    enrolled = set(range(n))
+    if len(case["forecasts"]) != len(case["availability"]):
+        raise ValueError("Forecasts must align with availability attempts")
+    for indices in case["availability"]:
+        if len(set(indices)) != len(indices) or not set(indices) <= enrolled:
+            raise ValueError("Availability must contain unique enrolled client IDs")
+    if any(len(set(row)) != len(row) or not set(row) <= enrolled
+           for forecast in case["forecasts"] for row in forecast):
+        raise ValueError("Forecasts must contain unique enrolled client IDs")
     if "initial_classes" in case:
         classes = [set(group) for group in case["initial_classes"]]
         if (sum(map(len, classes)) != n or set().union(*classes) != set(range(n))
@@ -200,12 +211,17 @@ def score(case, result):
                + tuple(i in roster for roster in result["rosters"]) for i in range(case["clients"])]
     sizes = [history.count(value) for value in history]
     attribution_bound = sum(1 / size for size in sizes) / len(sizes)
+    opportunities = np.array([sum(i in row for row in result["uploaded"])
+                              for i in range(case["clients"])])
+    inclusion = np.asarray(result["inclusion_counts"])[opportunities > 0] / opportunities[opportunities > 0]
     return {
         "minimum_class_size": result["minimum_class_size"],
         "history_violations": result["violations"],
         "included_fraction": included / possible if possible else None,
         "partition_classes": result["final_classes"],
         "jain_fairness": result["fairness"],
+        "p10_inclusion_fraction": float(np.quantile(inclusion, 0.1)) if len(inclusion) else None,
+        "p10_inclusion_count": float(np.quantile(result["inclusion_counts"], 0.1)),
         "history_only_identity_accuracy": attribution_bound,
         "successful_rounds": sum(bool(r) for r in result["rosters"]),
         "legal_effects": included if not result["violations"] else 0,

@@ -53,12 +53,12 @@ Utility NPZ schema: x[N,D], zero-based y[N], client[N], and split[N] with 0/1/2 
 | --- | --- | --- |
 | Two-sided historical children and survivor options | core.legal_size; core.refine | k; availability |
 | Debt, finite-horizon loss and capacity DP | core.choose; forecast.main | fairness/fragmentation/retry weights |
-| Minimum history size, violations, usable inclusion, Jain fairness | core.score; core.aggregate | run; plot |
+| Minimum history size, violations, usable inclusion, p10 inclusion, Jain fairness | core.score; core.aggregate | run; plot |
 | Equal-weight utility accuracy and macro-F1 | activity.main; predict.main | utility commands above |
 | Durable roster drift/recovery enforcement | protocol.RosterLedger | reserve/freeze/release; recovery test |
 | Frozen reconstruction and static profile assignment | attacks.main | separately declared diagnostics below |
 
-Included fraction uses original usable client-rounds, including paid warm rounds. Minimum size is the worst retained prefix; history_violations counts undersized classes at prefixes. history_only_identity_accuracy is the uniform-within-history-class diagnostic, not a bound under arbitrary background knowledge.
+Included fraction uses original usable client-rounds, including paid warm rounds. p10_inclusion_fraction is the 10th percentile of each client's included/usable opportunities among clients with at least one opportunity; p10_inclusion_count instead uses raw inclusion counts across every enrolled client. Invalid or duplicate availability/forecast IDs and nonpositive policy thresholds are rejected before scheduling. Minimum size is the worst retained prefix; history_violations counts undersized classes at prefixes. history_only_identity_accuracy is the uniform-within-history-class diagnostic, not a bound under arbitrary background knowledge.
 
 ~~~bash
 python -m cohortpatch.attacks --records runs/main/cohortpatch/records.jsonl --case-id 17:0 --updates data/frozen_aggregates.npz --reference data/frozen_profiles.npz --mode frozen --output runs/frozen_attack.json
@@ -96,4 +96,4 @@ Validated on Windows with Python 3.13.5, NumPy 2.1.3, SciPy 1.15.3, scikit-learn
 
 The existing MIT code license is retained; datasets and models retain their own licenses.
 
-Additional validated environment: PyTorch 2.7.1+cu118 on CPU. Checks include four-case suites, legal split sizes, warm histories, crash/roster replay, and two synthetic federated rounds with 14 participating local SGD updates. Loss/gradients were finite, every model parameter changed, and reload predictions agreed within tolerance. Real HAR training and cryptographic experiments were not run.
+Additional validated environment: PyTorch 2.7.1+cu118 on CPU. On 2026-11-01, six tests passed, including hand-computed participation tails and rejection of invalid client/policy inputs. Functional execution covered four-case seven-method suites, independent forecast fitting (seeds 11/17, horizon 2, four samples), 20-resample statistics, plotting, frozen-update diagnostics and saved-model prediction. Four synthetic federated rounds made 27 local SGD updates; loss/gradient norms were finite, every model parameter changed, and checkpoint eval outputs agreed within tolerance. Real HAR training and cryptographic experiments were not run.
