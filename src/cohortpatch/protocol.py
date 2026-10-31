@@ -89,3 +89,18 @@ class RosterLedger:
 
     def close(self):
         self.db.close()
+
+    def commit_aggregate(self, session, answer):
+        """Commit a native backend's sum after durable exact-roster freeze."""
+        answer = np.asarray(answer, float)
+        if not np.isfinite(answer).all():
+            raise ValueError("Native aggregate must be finite")
+        with self.db:
+            row = self.db.execute('SELECT status,answer FROM sessions WHERE id=?', (session,)).fetchone()
+            if row is None or row[0] not in ('frozen', 'released'):
+                raise ValueError("Native plaintext requires prior exact-roster freeze")
+            if row[0] == 'released':
+                return np.asarray(json.loads(row[1]))
+            self.db.execute('UPDATE sessions SET status=?,answer=? WHERE id=?',
+                            ('released', json.dumps(answer.tolist()), session))
+        return answer

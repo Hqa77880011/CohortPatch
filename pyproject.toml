@@ -19,3 +19,4 @@ where = ["src"]
 
 [project.optional-dependencies]
 activity = ["torch>=2.2"]
+secaggplus = ["flwr==1.23.0", "numpy>=1.26,<2.3"]

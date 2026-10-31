@@ -1,4 +1,8 @@
 .venv/
+.venv-secaggplus/
+external/
+.runtime/
+.deps/
 __pycache__/
 *.pyc
 *.egg-info/

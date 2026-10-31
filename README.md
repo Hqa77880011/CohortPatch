@@ -1,6 +1,6 @@
 # CohortPatch
 
-An implementation of **CohortPatch: Survivor-Aware Historical Partition Refinement for Multi-Round Secure Aggregation**. It includes two-sided history-safe rosters, public-forecast fragmentation cost, an exact capacity DP and a durable ideal aggregation adapter.
+An independent implementation of **CohortPatch: Survivor-Aware Historical Partition Refinement for Multi-Round Secure Aggregation**. It includes two-sided history-safe rosters, public forecasts, exact capacity DP, real Flower SecAgg+, sensor CNN training and the appendix attack suite. It is not an official author artifact.
 
 ## Installation
 
@@ -72,9 +72,49 @@ updates[R,D] must contain actual equal-weight aggregate updates, and profiles[N,
 python -m cohortpatch suite --data data/forecast_test.jsonl --config configs/small.json --output runs/comparison
 ~~~
 
-Methods: cohortpatch, fixed_groups, greedy_safe, no_history, no_complement, no_fragmentation, no_fairness. All share public availability/forecasts. The fairness ablation removes debt from ordering and score. Unsafe history/complement diagnostics are not authorized by the protected utility backend.
+The original controls are cohortpatch, fixed_groups, greedy_safe, no_history, no_complement, no_fragmentation and no_fairness. All share public availability/forecasts. The fairness ablation removes debt from ordering and score. Ordinary aggregation retains the common debt/retry objective without historical constraints. NDA/no-complement training records use historical k=1 while retaining the exact-roster gate and common crypto threshold; they never claim target-k protection. Protected methods enforce the declared historical k.
 
-The local sum adapter is an ideal backend, not Flower SecAgg+ cryptography. WISDM ingestion, the manuscript CNN, dynamic trajectory/attribute attacks and their support gate, full Multi-RoundSecAgg integration, and measured protocol/restart bytes are not implemented. Forecasts use a first-order model rather than correlated bootstrap. CLI CPU/RSS concern the local process, not network protocol overhead.
+The original `cohortpatch.data` feature-vector/MLP path above remains a labeled feature control. The primary inertial-window/CNN path and protocol/attack entries are below. CLI CPU/RSS concern the local process. Native SecAgg+ byte counters measure serialized application protobuf messages, not TCP/TLS packet captures.
+
+## Primary sensor, protocol and attack entries
+
+```bash
+python -m cohortpatch.sensors --source har --root "data/UCI HAR Dataset" --output data/har-cnn.npz
+python -m cohortpatch.sensors --source wisdm --root data/wisdm --output data/wisdm-cnn.npz
+python -m cohortpatch.availability --sensor data/har-cnn.npz --regime bursty --offline-mean 5 --attempts 200 --output data/availability.jsonl
+python -m cohortpatch run --data data/availability.jsonl --output runs/cnn-rosters
+```
+
+`sensors` reads actual HAR total-acceleration XYZ windows and WISDM smartphone accelerometers (128 samples, stride 64, 20 Hz). Corrupt rows, time resets, activity boundaries and acquisition gaps split WISDM segments. HAR retains official utility-test subjects. Defaults reserve four auxiliary-fit and four auxiliary-validation users: HAR has 10 enrolled/3 utility-validation/9 official-test subjects; WISDM derives its 60/20/20 roles before reserving auxiliary users (normally 22 enrolled). Exact retained counts and timestamps are saved in the role manifest; source totals never replace enrolled N.
+
+Availability regimes are independent (`--probability .5/.7/.9`), bursty (stationary .7, offline means 2/5/10), heterogeneous (.4--.95), correlated outages and explicitly activity-correlated stress. Joint conditional block-bootstrap forecasts use independently generated training runs; the legacy first-order predictor remains a separate condition. `--warm-rosters` imports paid retained releases. Auxiliary runs use `--role 3` or `--role 4` and their actual populations.
+
+```bash
+python -m venv .venv-secaggplus
+.venv-secaggplus/bin/python -m pip install flwr==1.23.0 numpy==2.1.3
+python -m cohortpatch.activity --data data/har-cnn.npz --records runs/cnn-rosters/cohortpatch/records.jsonl --case-id 17:bursty:0 --architecture cnn --backend secaggplus --secagg-python .venv-secaggplus/bin/python --output runs/cnn
+```
+
+On Windows the isolated executable is `.venv-secaggplus/Scripts/python.exe`. Keep Flower in its own environment; the utility process can use the existing PyTorch environment. The CNN has 32/64 channels, kernels 5/3, ReLU, temporal pooling, global average pooling, Adam, equal client weights and stateless local optimizers. Training-role-only normalization and L2 clipping precede secure encoding. The backend executes unchanged Flower 1.23.0 client mods and all four protocol stages, including fresh key exchange, shares, masks and unmasking. It checks the actual masked roster immediately before unmasking. Drift, dropout or interrupted reservations cannot authorize a fresh unnoticed release; native released sums are committed durably and retries return them. The live training backend aggregates clipped **updates**, then adds them to the public model.
+
+`server_aggregates.npz` contains public pre-round models, averages, rosters, availability, layer coordinates and run IDs. Separate restricted `scorer_updates.npz` contains actual individual updates and a mask: inactive client-rounds have no invented ground truth. It must not be given to an attacker except for the explicitly declared colluders or post-hoc scoring.
+
+```bash
+python -m cohortpatch.trajectory --data runs/target/server_aggregates.npz --truth runs/target/scorer_updates.npz --validation runs/auxval/server_aggregates.npz --validation-truth runs/auxval/scorer_updates.npz --mode dynamic --output runs/dynamic-attack
+python -m cohortpatch.profiles split --sensor data/wisdm-cnn.npz --output data/profile-blocks
+python -m cohortpatch.profiles build --sensor data/profile-blocks/prior.npz --trace runs/target/server_aggregates.npz --checkpoint runs/target/activity.pt --manifest data/profile-blocks/blocks.json --output runs/named-priors
+python -m cohortpatch.attack_data --manifest data/attack-runs.json --sensor data/wisdm-cnn.npz --mode full --output data/attribute
+python -m cohortpatch.attribute --data data/attribute/attribute.npz --output runs/attribute
+python -m cohortpatch.disaggregation --data data/disaggregation.npz --clients 10 --output runs/disaggregation
+```
+
+`trajectory` implements frozen ridge/pseudoinverse and dynamic temporal projected gradient, five restarts, the manuscript alpha/iteration validation grids, declared-colluder subtraction, actual observed-coordinate reconstruction error and one-to-one cosine assignment. Named references recompute stateless clipped local updates at every public model on chronologically disjoint held-out recording blocks. Train the victim on `profile-blocks/victim.npz`; its checkpoint must establish the claimed block boundary and full-window gap. HAR without verifiable acquisition metadata produces `unsupported_profile_prior`.
+
+`attack-runs.json` is a list of `{trace,run_id,role}`, with roles 0/1/2 for independent auxiliary fitting/validation/target runs and the corresponding actual sensor roles 3/4/0. The attribute entry builds only public features, freezes the auxiliary-fit walking-fraction median, checks two independent users per class per role and acquisition-block absence confounding, then trains the two-layer 64-unit GRU with training-only scaling and validation stopping. Unsupported cells have no AUC. Availability-only and metadata variants are explicit options. Validation adequacy is reported rather than assumed.
+
+`disaggregation` independently implements [Lam et al. Eqs. 5--7](https://proceedings.mlr.press/v139/lam21b.html): hard-threshold SVD, exact binary quadratic linearization, participation summaries and an excluded-solution uniqueness check. The unlicensed author source is not copied or imported. `sums`, `summary_matrix`, `counts` are the original side-information condition; `known_roster` selects the documented known-matrix adaptation. FedAvg drift remains a noisy fixed-vector approximation; the dynamic temporal attack is evaluated separately.
+
+Additional scheduler controls are `mr_fixed_k`, `mr_plus`, `no_refinement`, `class_count`, `no_retry` and `future_oracle`, alongside the existing warm-start, no-history and lambda-zero controls. Original fixed-K MR requires divisible N/T and K/T and is explicit-only; MR+ enlarges the remainder and selects legal variable-capacity unions with the stated heterogeneous fairness fallback. The exact future oracle is bounded to N<=12 and horizon<=6. TEE auditing is a protection-boundary reference, not a fabricated numerical baseline.
 
 ## Implementation provenance
 
@@ -96,4 +136,4 @@ Validated on Windows with Python 3.13.5, NumPy 2.1.3, SciPy 1.15.3, scikit-learn
 
 The existing MIT code license is retained; datasets and models retain their own licenses.
 
-Additional validated environment: PyTorch 2.7.1+cu118 on CPU. On 2026-11-01, six tests passed, including hand-computed participation tails and rejection of invalid client/policy inputs. Functional execution covered four-case seven-method suites, independent forecast fitting (seeds 11/17, horizon 2, four samples), 20-resample statistics, plotting, frozen-update diagnostics and saved-model prediction. Four synthetic federated rounds made 27 local SGD updates; loss/gradient norms were finite, every model parameter changed, and checkpoint eval outputs agreed within tolerance. Real HAR training and cryptographic experiments were not run.
+CPU functional checks on 2026-11-01 include eleven source tests, actual CNN gradients/parameter updates, dynamic reconstruction, recording-block gaps, public-feature isolation, original/MR+ roster arithmetic, and real Flower four-stage execution. A two-round/four-participant CNN run made eight actual clipped local updates through SecAgg+, saved/reloaded its model, and recorded real protobuf bytes. Independent small GRU and disaggregation checks exercise fitting/optimization without full training. Earlier MLP, suite, forecast, plotting and statistics checks remain functional fixtures. Full HAR/WISDM acquisition, 200-attempt/five-seed training, network captures and manuscript result reproduction remain validation limits; no generated fixture is reported as a paper result.

@@ -9,6 +9,12 @@ METHODS = [
     "no_complement",
     "no_fragmentation",
     "no_fairness",
+    "mr_fixed_k",
+    "mr_plus",
+    "no_refinement",
+    "class_count",
+    "no_retry",
+    "future_oracle",
 ]
 
 
@@ -44,7 +50,7 @@ def choose(classes, usable, debt, forecasts, capacity, k, threshold, method,
             0 if method in ("no_fairness", "greedy_safe") else -debt[i],
             -sum(i in future for future in forecasts), i))
         sizes = legal_size(len(group), len(available), k)
-        if method == "fixed_groups":
+        if method in ("fixed_groups", "no_refinement"):
             sizes = [0, len(group)] if group <= usable else [0]
         if method == "no_complement":
             sizes = [0] + list(range(k, len(available) + 1))
@@ -59,6 +65,8 @@ def choose(classes, usable, debt, forecasts, capacity, k, threshold, method,
                     rest = group - subset
                     after += largest(len(rest), len(rest & future), k)
                     fragmentation += forecast_horizon * max(0, before - after) / len(forecasts)
+            if method == "class_count":
+                fragmentation = float(bool(subset) and bool(group - subset))
             fairness = (
                 0
                 if method in ("no_fairness", "greedy_safe")
@@ -66,7 +74,7 @@ def choose(classes, usable, debt, forecasts, capacity, k, threshold, method,
             )
             retry = sum((retry_costs or {}).get(str(i), 0) for i in subset)
             candidates.append((subset, len(subset) + fairness - fragmentation_weight * fragmentation
-                               - retry_weight * retry))
+                               - (0 if method == "no_retry" else retry_weight) * retry))
         options.append(candidates)
     table = {0: (0.0, set())}
     for candidates in options:
@@ -153,10 +161,30 @@ def run_case(case, method):
             debt[client] += client not in selected
     minimum = min(map(len, history_classes))
     violations = 0
+    from .baselines import batches, batch_select, clairvoyant_path
+    batch_groups = batches(n, case.get("batch_size", k), method == "mr_fixed_k") if method in ("mr_fixed_k", "mr_plus") else None
+    if batch_groups and any(not any(group <= history for history in history_classes)
+                            for group in batch_groups):
+        raise ValueError("Fixed MR batches must respect retained warm-start histories")
+    rng = np.random.default_rng(case.get("seed", 17))
+    if method == "future_oracle" and (n > 12 or len(case["availability"]) > 6):
+        raise ValueError("Exact oracle domain is N <= 12 and horizon <= 6")
+    oracle = clairvoyant_path(classes, case["availability"], case["capacity"],
+                             case["threshold"], k) if method == "future_oracle" else None
     for t, indices in enumerate(case["availability"]):
         usable = set(indices)
-        if method == "no_history":
-            selected = set(sorted(usable)[: case["capacity"]])
+        if oracle is not None:
+            selected = set(oracle[t])
+        elif batch_groups is not None:
+            counts = [sum(i in roster for roster in rosters) for i in range(n)]
+            selected = batch_select(batch_groups, usable, counts, case["capacity"],
+                                    case["threshold"], rng, fixed_k=method == "mr_fixed_k",
+                                    heterogeneous=case.get("heterogeneous_availability", True))
+        elif method == "no_history":
+            # Keep the same public debt/retry objective after removing history.
+            selected=choose([enrolled],usable,debt,[],case['capacity'],1,case['threshold'],'no_complement',
+                            fairness_weight=case.get('fairness_weight',.1),fragmentation_weight=0,
+                            retry_costs=case.get('retry_costs'),retry_weight=case.get('retry_weight',1))
         else:
             selected = choose(
                 classes,

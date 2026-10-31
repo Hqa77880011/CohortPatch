@@ -167,7 +167,7 @@ def main():
             "--methods",
             nargs="+",
             choices=core.METHODS,
-            default=[core.METHODS[0]] if name == "run" else core.METHODS,
+            default=[core.METHODS[0]] if name == "run" else [m for m in core.METHODS if m not in ('future_oracle','mr_fixed_k')],
         )
     item = sub.add_parser("plot")
     item.add_argument("--inputs", nargs="+", required=True)
